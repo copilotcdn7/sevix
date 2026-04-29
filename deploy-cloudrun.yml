@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "vless-cloudrun/**"
-      - ".github/workflows/deploy-cloudrun.yml"
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -63,8 +60,9 @@ jobs:
             --port 8080 \
             --cpu 1 \
             --memory 512Mi \
-            --min-instances 0 \
+            --min-instances 1 \
             --max-instances 10 \
+            --concurrency 1000 \
             --timeout 3600 \
             --set-env-vars UPSTREAM_URL=https://45.61.163.95:443
 
