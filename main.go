@@ -5,8 +5,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -51,6 +49,17 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	log.Printf("[ws] connected ip=%s", realIP(r))
+
+	// Keep-alive ping her 25 saniyede bir
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}()
 
 	for {
 		msgType, msg, err := conn.ReadMessage()
@@ -116,29 +125,6 @@ func xhttpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Upstream reverse proxy (/proxy/*) ──────────────────────────────────────
-func buildReverseProxy() http.Handler {
-	raw := os.Getenv("UPSTREAM_URL")
-	if raw == "" {
-		raw = "https://45.61.163.95:443" // varsayılan upstream
-	}
-	target, err := url.Parse(raw)
-	if err != nil {
-		log.Fatalf("UPSTREAM_URL parse error: %v", err)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		log.Printf("[proxy] error: %v", err)
-		http.Error(w, "upstream error", http.StatusBadGateway)
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.URL.Path = strings.TrimPrefix(r.URL.Path, "/proxy")
-		r.Host = target.Host
-		log.Printf("[proxy] %s %s → %s", r.Method, r.RequestURI, raw)
-		proxy.ServeHTTP(w, r)
-	})
-}
-
 // ── Root handler: WebSocket veya HTTP ──────────────────────────────────────
 func rootHandler(w http.ResponseWriter, r *http.Request) {
 	if websocket.IsWebSocketUpgrade(r) {
@@ -147,11 +133,10 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":       true,
-		"service":  "cloud-run-ws-xhttp",
-		"time":     time.Now().UTC().Format(time.RFC3339),
-		"client":   realIP(r),
-		"upstream": os.Getenv("UPSTREAM_URL"),
+		"ok":      true,
+		"service": "cloud-run-ws-xhttp",
+		"time":    time.Now().UTC().Format(time.RFC3339),
+		"client":  realIP(r),
 	})
 }
 
@@ -163,11 +148,10 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", rootHandler)           // WebSocket + HTTP
-	mux.HandleFunc("/ws", wsHandler)           // explicit WebSocket path
-	mux.HandleFunc("/xhttp", xhttpHandler)     // xhttp stream / post
-	mux.HandleFunc("/healthz", healthHandler)  // health check
-	mux.Handle("/proxy/", buildReverseProxy()) // upstream proxy
+	mux.HandleFunc("/", rootHandler)          // WebSocket + HTTP
+	mux.HandleFunc("/ws", wsHandler)          // explicit WebSocket path
+	mux.HandleFunc("/xhttp", xhttpHandler)    // xhttp stream / post
+	mux.HandleFunc("/healthz", healthHandler) // health check
 
 	srv := &http.Server{
 		Addr:              ":" + port,
@@ -176,7 +160,7 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	log.Printf("🚀 listening port=%s upstream=%s", port, os.Getenv("UPSTREAM_URL"))
+	log.Printf("🚀 listening port=%s", port)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
